@@ -82,7 +82,7 @@ var appData = {
 function renderApplication() {
   document.querySelector("#app").innerHTML =
   HorizontalContainer(
-    Header1("HHjs is the best JS framework"),
+    Header1("❣️JS is the best framework"),
     Paragraph({style: "color: " + appData.paragraphColor + ";"}, appData.message),
     Paragraph("Try clicking the buttons below and see the text magically change!!!"),
     Container(
