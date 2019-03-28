@@ -1,136 +1,144 @@
 // Internal functions of the framework
-let eventHandlers = {};
-let activeEventTargetId = null;
+let application = {
+  entryPoint: null
+};
+let cachedElement = null;
+let currentState = null;
 
-function handleEvent(id, event) {
-  activeEventTargetId = event.target.id;
-  eventHandlers[id](event.target.value);
-}
+let lastDom = null;
+let newDom = null;
 
-function bindEventHandlers() {
-  // A cheap hack to handle input fields? No way!
-  if (activeEventTargetId) {
-    let element = document.getElementById(activeEventTargetId);
-    element.focus();
-    let len = element.value.length * 2;
-    element.setSelectionRange(len, len);
-    activeEventTargetId = null;
-  }
-  
-  // Bind event handlers
-  for (let id in eventHandlers) {
-    document.querySelector('#' + id).addEventListener('input', (event) => {
-      handleEvent(id, event);
-    });
-  }
-}
-
-function generateAttributeString(attributes) {
-  let pairs = [];
-  for (let key in attributes) {
-    if (typeof attributes[key] === "function") {
-      // Event handler
-      let func = attributes[key];
-      pairs.push(`${key}="${func.name}()"`);
-    } else if (typeof attributes[key] === "object") {
-      // Styles
-      let styleString = "";
-      let styleObject = attributes[key];
-      for (let style in styleObject) {
-        styleString += `${style}: ${styleObject[style]};`
-      }
-      pairs.push(`${key}="${styleString}"`);
+function processInnerComponents(element, ...innerComponents) {
+  innerComponents.forEach((component) => {
+    if (Array.isArray(component)) {
+        processInnerComponents(element, ...component);
+    } else if (typeof component === "string") {
+      element.innerHTML = component;
     } else {
-      pairs.push(`${key}="${attributes[key]}"`);
+      element.appendChild(component);
     }
-  }
-  return pairs.join(" ");
+  });
 }
 
-function processInnerComponents(...innerComponents) {
-  return innerComponents.reduce((combined, current) => {
-    return combined + current;
-  }, "");
+function isValidElement(component) {
+  return component instanceof Element
+      || component instanceof HTMLDocument
+      || typeof component === "string"
+      || Array.isArray(component);
 }
 
 function render(elementType, ...innerComponents) {
-  let shouldRender = true;
-  let options = [];
-  let inputID = null;
-  let attributes = innerComponents
-    .filter((component) => {
-      return typeof component === "object"; 
-    })
-    .filter((attribute) => {
-      if (attribute["if"]) {
-        shouldRender = false;
-        return false;
-      } else if (attribute["for"]) {
-        options = attribute["for"];
-        return false;
-      } else if (attribute["input"]) {
-        let inputFunction = attribute["input"];
-        inputID = inputFunction.name;
-        Object.defineProperty(eventHandlers, inputID, {
-          value: inputFunction,
-          enumerable: true
-        });
+  let thisElement = document.createElement(elementType);
+  let elementKey = null;
+  
+  innerComponents.filter((component) => {
+      if (component["key"]) {
+        elementKey = component["key"];
         return false;
       }
-      return true;
-    })
-    .reduce((combined, current) => {
-      if (!combined) combined = {};
-      return Object.assign(combined, current);
-    }, null);
+      return !isValidElement(component);
+    }).forEach((component) => {
+      if (component["events"]) {
+        let events = component["events"];
+        for (let key in component["events"]) {
+          
+          thisElement.addEventListener(key, (event) => {
+            if (elementKey) {
+              cachedElement = {
+                element: event.target,
+                key: elementKey
+              };
+            } else {
+              cachedElement = null;
+            }
+            events[key](event);
+          });
+        }
+      } else if (component["elementStyle"]) {
+        let styleString = "";
+        let styleObject = component["elementStyle"];
+        for (let style in styleObject) {
+          styleString += `${style}: ${styleObject[style]};`
+        }
+        thisElement.setAttribute("style", styleString);
+      } else {
+        for (let key in component) {
+          thisElement.setAttribute(key, component[key]);
+        }
+      }
+    });
   
-  if (!shouldRender) return "";
-  if (inputID) {
-    if (!attributes) {
-      attributes = {id: inputID};
-    } else {
-      Object.assign(attributes, {id: inputID});
-    }
+  if (cachedElement && elementKey === cachedElement.key) {
+      thisElement = cachedElement.element;
   }
   
   let components = innerComponents.filter((component) => {
-    return typeof component === "string";
+    return isValidElement(component);
   });
   
-  let processedComponents = processInnerComponents(...components);
-
-  if (options.length > 1) {
-    return options.map((option) => {
-      return processedComponents.replace("{{iterator}}", option);
-    }).reduce((combined, current) => {
-      return combined + `<${elementType} ${generateAttributeString(attributes)}>${current}</${elementType}>`;
-    }, "");
-  }
+  processInnerComponents(thisElement, ...components);
   
-  return `<${elementType} ${generateAttributeString(attributes)}>${processedComponents}</${elementType}>`;
+  return thisElement;
 }
 
-function initAppData(data) {
+function InitAppData(application, data) {
   let reactiveData = {};
   for (var key in data) {
-   let value = data[key];
+   let cachedKey = key;
    Object.defineProperty(reactiveData, key, {
      get: function() {
-      return value;
+      return data[cachedKey];
      },
      set: function(newValue) {
-      value = newValue;
-      renderApplication();
-     }
+       data[cachedKey] = newValue;
+       application.state = data;
+     },
+     enumerable: true
    });
   }
   return reactiveData;
 }
 
+function InitApplication(app, initialState) {
+  application.entryPoint = app;
+
+  Object.defineProperty(application, "state", {
+    get: function() {
+      return currentState;
+    },
+    set: function(newValue) {
+      currentState = InitAppData(application, newValue);
+      RenderApplication(application.entryPoint);
+    }
+  });
+    
+  application.state = initialState;
+}
+
+function RenderApplication(app) {
+  newDom = app(application);
+  
+  if (lastDom) {
+    document.querySelector("#app").replaceChild(newDom, lastDom);
+  } else {
+    document.querySelector("#app").appendChild(newDom);
+  }
+  
+  // Return focus to the element that triggered the re-render
+  if (cachedElement)
+    cachedElement.element.focus();
+  
+  lastDom = newDom;
+}
+
+/*
+* Below this line is the actual usage of the framework
+*/
+
 // Component declarations
 function Container(...comp) {
   return render("div", {
-    style: {
+    elementStyle: {
       "display": "flex",
       "flex-direction": "row",
       "font-family": "Arial, Helvetica, sans-serif"
@@ -140,7 +148,7 @@ function Container(...comp) {
 
 function HorizontalContainer(...comp) {
   return render("div", {
-    style: {
+    elementStyle: {
       "display": "flex",
       "flex-direction": "column",
       "font-family": "Arial, Helvetica, sans-serif"
@@ -150,155 +158,177 @@ function HorizontalContainer(...comp) {
 
 function Button(...comp) {
   return render("button", {
-    style: {
+    elementStyle: {
       "border": "1px solid #ccc",
       "border-radius": "4px",
       "margin": "4px",
       "padding": "6px",
       "drop-shadow": "4px black",
       "font-size": "14px"
-    },
-    class: "basic-button"
-  },...comp);
+    }
+  }, ...comp);
 }
 
 function Header1(...comp) {
   return render("h1", ...comp);
 }
 
-function Paragraph(...comp) {
-  return render("p",...comp);
+function Image(...comp) {
+  return render("img", ...comp);
+}
+
+function Span(...comp) {
+  return render("span", ...comp);
+}
+
+function P(...comp) {
+  return render("p", ...comp);
 }
 
 function Input(...comp) {
-  return render("input", ...comp);
+  return render("input", {
+    elementStyle: {
+      "border-radius": "4px",
+      "border": "1px solid #ccc",
+      "padding": "4px 2px"
+    }
+  }, ...comp);
 }
 
-function Table(...comp) {
-  return render("table", ...comp);
-}
+// Define the application. Functions are defined inside the scope so they have
+// access to the appData.
+const AnimeApp = (appData) => {
+  function compareSize(a, b) {
+    return a.size > b.size ? 1 : -1
+  }
 
-function TableRow(...comp) {
-  return render("tr", ...comp);
-}
+  function compareName(a, b) {
+    return a.name.localeCompare(b.name);
+  }
 
-function TableHeader(...comp) {
-  return render("th", ...comp);
-} 
+  function compare(a, b) {
+    if (appData.state.sortBy === "size") {
+      return appData.state.sortDir === "asc"
+        ? compareSize(a,b)
+        : compareSize(b,a);
+    } else {
+      return appData.state.sortDir === "asc"
+        ? compareName(a,b)
+        : compareName(b,a);
+    }
+  }
 
-function TableCell(...comp) {
-  return render("td", ...comp);
-}
-
-// This is the base application data that gets rendered on first render
-var appData = {
-  paragraphColor: "red",
-  message: "It is production quality so feel free to use in your enterprais applications",
-  inputValue: "",
-  buttonsDisabled: false,
-  columnIndex: 6,
-  tableHeaders: [
-    "Column 1",
-    "Column 2",
-    "Column 3",
-    "Column 4",
-    "Column 5"
-  ],
-  tableCells: [
-    "WoW!",
-    "Such",
-    "Loop",
-    "Rendering",
-    ":DD"
-  ]
-};
-
-// Layout and styles are done with JS only! Wow!
-function renderApplication() {
-  document.querySelector("#app").innerHTML =
-  HorizontalContainer(
+  function setSortParams(sortBy, sortDir) {
+    appData.state = {
+      ...appData.state,
+      sortBy: sortBy,
+      sortDir: sortDir
+    };
+  }
+  
+  function addAnimeGirl() {
+    appData.state = {
+      ...appData.state,
+      inputName: "",
+      inputUrl: "",
+      inputSize: "",
+      images: appData.state.images.concat([{
+        name: appData.state.inputName,
+        url: appData.state.inputUrl,
+        size: appData.state.inputSize
+      }])
+    };
+  }
+  
+  function SortButton(sortBy, sortDir, ...comp) {
+    return Button(
+      {events: {click: () => setSortParams(sortBy, sortDir)}},
+      {class: appData.state.sortBy === sortBy && appData.state.sortDir === sortDir ? "active" : ""}, ...comp
+    );
+  }
+  
+  return HorizontalContainer(
     Header1("❣️JS is the best framework"),
-    Paragraph(
-      {style: { color: appData.paragraphColor }},
-      appData.message),
-    Paragraph(
-      "Try clicking the buttons below and see the text magically change!!!"),
     Container(
-      Button(
-        {onclick: changeColor},
-        "Try clicking me!"),
-      Button(
-        {onclick: changeMessage},
-        "Change the message!"),
-      Button(
-        {if: appData.buttonsDisabled},
-        {onclick: disableButtons},
-        "Remove buttons from the left side"),
-      Button(
-        {if: !appData.buttonsDisabled},
-        {onclick: disableButtons},
-        "Add buttons to the left side"),
       HorizontalContainer(
-         {if: appData.buttonsDisabled},
-         Button("Empty buton"),
-         Button("Sad :(")
-      )
-    ),
-    Container(
-      {style: { "text-align": "center", "padding": "10px" }},
-      Table(
-        {style: { "padding": "2px" }},
-        {border: "1"},
-        TableRow(
-          TableCell(
-            {for: appData.tableHeaders},
-            "{{iterator}}"
+        Container(
+          Span({elementStyle: { "flex-grow": 1 }},"Name: "),
+          Input(
+            {key: "nameInput"},
+            {events: {input: (event) => appData.state.inputName = event.target.value}},
+            {value: appData.state.inputName}
           )
         ),
-        TableRow(
-          TableCell(
-            {for: appData.tableCells},
-            "{{iterator}}"
+        Container(
+          Span({elementStyle: { "flex-grow": 1 }}, "Url: "),
+          Input(
+            {key: "urlInput"},
+            {events: {input: (event) => appData.state.inputUrl = event.target.value}},
+            {value: appData.state.inputUrl}
+          )
+        ),
+        Container(
+          Span({elementStyle: { "flex-grow": 1 }}, "Size: "),
+          Input(
+            {key: "sizeInput"},
+            {events: {input: (event) => appData.state.inputSize = event.target.value}},
+            {value: appData.state.inputSize}
           )
         )
-      )
-    ),
-    Container(
-      Input(
-      {value: appData.inputValue},
-      {input: columnInput}),
+      ),
       Button(
-        {onclick: addColumn},
-        "Add column")
-    )
+        {events: {click: addAnimeGirl}},
+        "Add animu gurl"
+      ),
+    ),
+    P(`Uuden animen nimi: ${appData.state.inputName}`),
+    P(`Uuden animen URL: ${appData.state.inputUrl}`),
+    P(`Uuden animen koko: ${appData.state.inputSize}`),
+    Container(
+      SortButton("size", "desc", "Size descending"),
+      SortButton("size", "asc", "Size ascending"),
+      SortButton("name", "desc", "Name descending"),
+      SortButton("name", "asc", "Name ascending")
+      ),
+      Container(
+        HorizontalContainer(
+          function() {
+            return appData.state.images.sort(compare).map((image) => 
+                [Image(
+                  {elementStyle: {
+                    width: "200px",
+                    height: "200px"
+                  }},
+                  {src: image.url}
+                ),
+                Span(image.name + " - " + image.size + "KB")]
+              );
+          }()
+        )
+      )
   );
-  
-  bindEventHandlers();
 }
 
-// Button click handlers
-function changeColor() {
-  appData.paragraphColor = "blue";
-}
-
-function changeMessage() {
-  appData.message = "What are you waiting for???????";
-}
-
-function disableButtons() {
-  appData.buttonsDisabled = !appData.buttonsDisabled;
-}
-
-function addColumn() {
-  appData.tableHeaders.push("Column " + appData.columnIndex);
-  appData.tableCells.push(appData.inputValue);
-  appData.columnIndex += 1;
-  appData.inputValue = "";
-}
-
-function columnInput(value) {
-  appData.inputValue = value;
-}
-
-appData = initAppData(appData);
-renderApplication();
+// Pass the application to the render function with the initial state
+InitApplication(AnimeApp, {
+  images: [{
+    name: "pinkviini",
+    size: 66666,
+    url: "https://i.redd.it/cp4d232b15o21.png"
+  },
+  {
+    name: "anime tyds",
+    size: 1337,
+    url: "https://i.redd.it/gr2zcpsmo3o21.jpg",
+  },
+  {
+  	url: "https://i.redd.it/azdz6rogb2o21.jpg",
+    size: 500,
+    name: "tisu"
+  }],
+  sortBy: "size",
+  sortDir: "desc",
+  inputName: "",
+  inputUrl: "",
+  inputSize: ""
+});
